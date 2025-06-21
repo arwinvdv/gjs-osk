@@ -805,7 +805,27 @@ class Keyboard extends Dialog {
         let r = 0;
         let c;
         const doAddKey = (keydef) => {
-            const i = Object.hasOwn(keydef, "key") ? keycodes[keydef.key] : Object.hasOwn(keydef, "split") ? "split" : "empty space";
+            let i;
+            if (Object.hasOwn(keydef, "output")) {
+                i = {
+                    layers: { "default": keydef.label || keydef.output, shift: keydef.label || keydef.output },
+                    output: keydef.output,
+                    isOutputOnly: true
+                };
+            } else if (Object.hasOwn(keydef, "modified_key")) {
+                i = {
+                    layers: { "default": keydef.label || keydef.output, shift: keydef.label || keydef.output },
+                    modifier: keydef.modifier,
+                    modified_key: keydef.modified_key,
+                };
+            } else if (Object.hasOwn(keydef, "key")) {
+                i = keycodes[keydef.key];
+            } else if (Object.hasOwn(keydef, "split")) {
+                i = "split";
+            } else {
+                i = "empty space";
+            }
+
             if (i != null && typeof i !== 'string') {
                 if (i.layers.default == null) {
                     for (var key of Object.keys(i.layers)) {
@@ -910,6 +930,7 @@ class Keyboard extends Dialog {
                 left.add_style_class_name("regular");
                 right.add_style_class_name("regular");
             }
+
             const settingsBtn = new St.Button({
                 x_expand: true,
                 y_expand: true
@@ -993,17 +1014,20 @@ class Keyboard extends Dialog {
                 this.box.add_style_class_name("regular");
             }
 
-            const settingsBtn = new St.Button({
-                x_expand: true,
-                y_expand: true
-            })
-            settingsBtn.add_style_class_name("settings_btn")
-            settingsBtn.add_style_class_name("key")
-            settingsBtn.connect("clicked", () => {
-                this.settingsOpenFunction();
-            })
-            grid.attach(settingsBtn, 0, 0, 2 * topBtnWidth, 3)
-            this.keys.push(settingsBtn)
+            const isKioskMode = layoutName.toLowerCase().includes("kiosk");
+            if (!isKioskMode) {
+                const settingsBtn = new St.Button({
+                    x_expand: true,
+                    y_expand: true
+                })
+                settingsBtn.add_style_class_name("settings_btn")
+                settingsBtn.add_style_class_name("key")
+                settingsBtn.connect("clicked", () => {
+                    this.settingsOpenFunction();
+                })
+                grid.attach(settingsBtn, 0, 0, 2 * topBtnWidth, 3)
+                this.keys.push(settingsBtn)
+            }
 
             const closeBtn = new St.Button({
                 x_expand: true,
@@ -1152,12 +1176,45 @@ class Keyboard extends Dialog {
                     item.space_motion_handler = null;
                 } else if (item.key_pressed == true || item.space_motion_handler == null) {
                     try {
+
                         if (!item.char.isMod) {
+                            if (item.char.isOutputOnly && item.char.output) {
+                                this.sendTextFromKeycodes(item.char.output);
+                                return;
+                            }
+                            // fix for modifier keys
+                            if (item.char.modifier && item.char.modified_key) {
+                                // Find the modifier keycode
+                                let modCode = null;
+                                for (let code in keycodes) {
+                                    if (keycodes[code].layers && keycodes[code].layers.default && keycodes[code].layers.default.toLowerCase() === item.char.modifier.toLowerCase()) {
+                                        modCode = keycodes[code].code;
+                                        break;
+                                    }
+                                }
+                                // Find the modified keycode (e.g., AE02)
+                                let modKeyCode = null;
+                                if (keycodes[item.char.modified_key]) {
+                                    modKeyCode = keycodes[item.char.modified_key].code;
+                                }
+                                if (modCode !== null && modKeyCode !== null) {
+                                    // Press modifier, then key, then release modifier
+                                    this.inputDevice.notify_key(Clutter.get_current_event_time(), modCode, Clutter.KeyState.PRESSED);
+                                    this.inputDevice.notify_key(Clutter.get_current_event_time(), modKeyCode, Clutter.KeyState.PRESSED);
+                                    this.inputDevice.notify_key(Clutter.get_current_event_time(), modKeyCode, Clutter.KeyState.RELEASED);
+                                    this.inputDevice.notify_key(Clutter.get_current_event_time(), modCode, Clutter.KeyState.RELEASED);
+                                }
+                                return;
+                            }
+
+                            // Toets zelf indrukken
                             this.decideMod(item.char)
+
                         } else {
                             const modButton = item;
                             this.decideMod(item.char, modButton)
                         }
+
                     } catch { }
                 }
                 item.key_pressed = false;
@@ -1343,5 +1400,28 @@ class Keyboard extends Dialog {
         this.shift = false;
         this.alt = false;
         this.updateKeyLabels()
+    }
+
+    sendTextFromKeycodes(text) {
+        for (let ch of text) {
+            let found = false;
+
+            for (let code in keycodes) {
+                const kc = keycodes[code];
+                if (!kc || !kc.layers) continue;
+
+                // Check default layer
+                if (kc.layers.default === ch) {
+                    this.inputDevice.notify_key(Clutter.get_current_event_time(), kc.code, Clutter.KeyState.PRESSED);
+                    this.inputDevice.notify_key(Clutter.get_current_event_time(), kc.code, Clutter.KeyState.RELEASED);
+                    found = true;
+                    break;
+                }
+            }
+
+            if (!found) {
+                log(`GJS-OSK: No keycode found for '${ch}'`);
+            }
+        }
     }
 }
